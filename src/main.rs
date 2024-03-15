@@ -1,8 +1,4 @@
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::{atomic::Ordering, Arc},
-};
+use std::sync::{atomic::Ordering, Arc};
 
 use winit::{
     event::*,
@@ -16,31 +12,10 @@ use anyhow::{anyhow, Result};
 mod window;
 use window::ZxWindow;
 
-use crate::window::ZxState;
+mod cmd;
+use cmd::CmdQueue;
 
-pub enum WindowCmd {
-    CreateWindow(String),
-}
-
-pub struct CmdQueue {
-    commands: RefCell<Vec<WindowCmd>>,
-}
-
-impl CmdQueue {
-    fn new() -> Rc<Self> {
-        Rc::new(CmdQueue {
-            commands: RefCell::new(Vec::new()),
-        })
-    }
-
-    pub fn add(&self, command: WindowCmd) {
-        self.commands.borrow_mut().push(command);
-    }
-
-    fn drain(&self) -> Vec<WindowCmd> {
-        self.commands.borrow_mut().drain(..).collect()
-    }
-}
+use crate::{cmd::WindowCmd, window::ZxState};
 
 pub fn run() -> Result<()> {
     let event_loop = EventLoop::new()?;

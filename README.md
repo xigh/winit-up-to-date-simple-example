@@ -12,7 +12,7 @@ Where Queue allows the method to communicate with the event_loop, by example, in
 
 And the event_loop handles ZxWindow list. If this list is empty, the application exists.
 
-# next step : 
+# next steps : 
 
 - [ ] add wgpu stuff 
 - [ ] implements other events

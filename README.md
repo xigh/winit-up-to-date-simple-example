@@ -2,7 +2,7 @@
 
 This simple example only create windows and manage windows list.
 
-The [https://github.com/xigh/winit-up-to-date-simple-example/blob/master/src/window/mod.rs#L27](ZxWindow) structure implements : 
+The [ZxWindow](https://github.com/xigh/winit-up-to-date-simple-example/blob/master/src/window/mod.rs#L27) structure implements : 
 
 ```rust
 pub fn on_key_input(&mut self, code: KeyCode, pressed: bool, queue: &Rc<CmdQueue>)

@@ -1,25 +1,96 @@
+use anyhow::{anyhow, Result};
+use std::num::NonZeroU32;
+use std::rc::Rc;
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalSize,
     event::*,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowId, Fullscreen},
-    dpi::PhysicalSize,
+    window::{Fullscreen, Window, WindowId},
 };
-use std::num::NonZeroU32;
-use anyhow::{anyhow, Result};
-use std::rc::Rc;
 
 const WINDOW_W: u32 = 640;
 const WINDOW_H: u32 = 480; // 360;
 
 #[derive(Default)]
 struct App {
-    windows: Vec<(Rc<Window>, softbuffer::Context<Rc<Window>>, softbuffer::Surface<Rc<Window>, Rc<Window>>)>,
+    windows: Vec<(
+        Rc<Window>,
+        softbuffer::Context<Rc<Window>>,
+        softbuffer::Surface<Rc<Window>, Rc<Window>>,
+    )>,
+    x: i32,
+    inc_x: i32,
+}
+
+impl App {
+    fn redraw(&mut self, id: WindowId) {
+        if self.inc_x == 0 {
+            self.inc_x = 1;
+        }
+
+        self.x += self.inc_x;
+        println!("x: {}, inc_x: {}", self.x, self.inc_x);
+
+        if self.x > 400 {
+            self.inc_x = -1;
+        } else if self.x < 100 {
+            self.inc_x = 1;
+        }
+
+        let (window, _context, surface) = self
+            .windows
+            .iter_mut()
+            .find(|(window, _, _)| window.id() == id)
+            .unwrap();
+        let (width, height) = {
+            let size = window.inner_size();
+            (size.width, size.height)
+        };
+        surface
+            .resize(
+                NonZeroU32::new(width).unwrap(),
+                NonZeroU32::new(height).unwrap(),
+            )
+            .unwrap();
+
+        let scale_x = (width as f32 / WINDOW_W as f32).floor() as u32;
+        let scale_y = (height as f32 / WINDOW_H as f32).floor() as u32;
+        let scale = std::cmp::min(scale_x, scale_y);
+
+        let ww = WINDOW_W * scale;
+        let wh = WINDOW_H * scale;
+        let scale = scale as i32;
+
+        let mut buffer = surface.buffer_mut().unwrap();
+        for index in 0..(width * height) {
+            let p_y = (index / width) as i32;
+            let p_x = (index % width) as i32;
+
+            let x = (p_x - ((width - ww) as i32 / 2)) / scale;
+            let y = (p_y - ((height - wh) as i32 / 2)) / scale;
+
+            let (red, green, blue) =
+                if x < 0 || x >= WINDOW_W as i32 || y < 0 || y >= WINDOW_H as i32 {
+                    (0, 0, 0)
+                // } else if (x >= 100 && x <= 104) || (y >= 100 && y <= 104) {
+                } else if (x == self.x) || (y == self.x) {
+                    (255, 255, 255)
+                } else {
+                    (0, 80, 130)
+                };
+
+            buffer[index as usize] = blue | (green << 8) | (red << 16);
+        }
+
+        buffer.present().unwrap();
+    }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        println!("resumed");
         let window_attr = Window::default_attributes()
             .with_title("Window")
             .with_resizable(false)
@@ -28,6 +99,21 @@ impl ApplicationHandler for App {
         let context = softbuffer::Context::new(Rc::clone(&window)).unwrap();
         let surface = softbuffer::Surface::new(&context, Rc::clone(&window)).unwrap();
         self.windows.push((window, context, surface));
+    }
+
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        println!("suspended");
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        println!("exiting");
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let window_ids: Vec<_> = self.windows.iter().map(|(window, _, _)| window.id()).collect();
+        for id in window_ids {
+            self.redraw(id);
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -62,8 +148,16 @@ impl ApplicationHandler for App {
                         KeyCode::KeyF => {
                             println!("KeyF");
                             // toggle fullscreen
-                            if let Some((window, _, _)) = self.windows.iter_mut().find(|(window, _, _)| window.id() == id) {
-                                window.set_fullscreen(if window.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
+                            if let Some((window, _, _)) = self
+                                .windows
+                                .iter_mut()
+                                .find(|(window, _, _)| window.id() == id)
+                            {
+                                window.set_fullscreen(if window.fullscreen().is_some() {
+                                    None
+                                } else {
+                                    Some(Fullscreen::Borderless(None))
+                                });
                             }
                         }
                         _ => {
@@ -114,118 +208,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 println!("\tRedrawRequested");
-                let (window, _context, surface) = self.windows.iter_mut().find(|(window, _, _)| window.id() == id).unwrap();
-                let (width, height) = {
-                    let size = window.inner_size();
-                    (size.width, size.height)
-                };
-                surface
-                    .resize(
-                        NonZeroU32::new(width).unwrap(),
-                        NonZeroU32::new(height).unwrap(),
-                    )
-                    .unwrap();
-
-                let scale_x = (width as f32 / WINDOW_W as f32).floor() as u32;
-                let scale_y = (height as f32 / WINDOW_H as f32).floor() as u32;
-                let scale = std::cmp::min(scale_x, scale_y);
-
-                let ww = WINDOW_W * scale;
-                let wh = WINDOW_H * scale;
-                let scale = scale as i32;
-
-                let mut buffer = surface.buffer_mut().unwrap();
-                for index in 0..(width * height) {
-                    let p_y = (index / width) as i32;
-                    let p_x = (index % width) as i32;
-
-                    let x = (p_x - ((width - ww) as i32 / 2)) / scale;
-                    let y = (p_y - ((height - wh) as i32 / 2)) / scale;
-
-                    let (red, green, blue) = if x < 0 || x >= WINDOW_W as i32 || y < 0 || y >= WINDOW_H as i32 {
-                        (0, 0, 0)
-                    // } else if (x >= 100 && x <= 104) || (y >= 100 && y <= 104) {
-                    } else if (x == 100) || (y == 100) {
-                        (255, 255, 255)
-                    } else {
-                        (0, 80, 130)
-                    };
-
-                    buffer[index as usize] = blue | (green << 8) | (red << 16);
-                }
-
-                buffer.present().unwrap();
+                self.redraw(id);
             }
             _ => {}
         }
     }
 }
-
-/*
-            Event::NewEvents(start_cause) => {
-                if false {
-                    println!("\tNewEvents {:?}", start_cause);
-                }
-            }
-            Event::DeviceEvent { device_id, event } => {
-                if false {
-                    println!("\tDeviceEvent: {:?}/{:?}", device_id, event);
-                }
-            }
-            Event::UserEvent(_) => {
-                println!("\tUserEvent");
-            }
-            Event::Suspended => {
-                println!("\tSuspended");
-            }
-            Event::Resumed => {
-                println!("\tResumed started={}", started);
-                if !started {
-                    started = true;
-
-                    q.add(WindowCmd::CreateWindow(format!(
-                        "window {}",
-                        shared_state.count.fetch_add(1, Ordering::Relaxed) + 1
-                    )));
-                }
-            }
-            Event::AboutToWait => {
-                if started && windows.len() == 0 {
-                    // no more window ... exiting .. unless we have a system tray icon ???
-                    target.exit();
-                }
-            }
-            Event::LoopExiting => {
-                println!("\tLoopExiting");
-            }
-            Event::MemoryWarning => {
-                println!("\tMemoryWarning");
-            }
-        }
-
-        while let Some(idx) = windows.iter().position(|w| w.exiting()) {
-            windows.remove(idx);
-        }
-
-        for cmd in q.drain() {
-            match cmd {
-                WindowCmd::CreateWindow(title) => {
-                    if let Ok(window) = WindowBuilder::new().with_title(title).build(target) {
-                        windows.push(ZxWindow::new(shared_state.clone(), window));
-                    }
-                }
-            }
-        }
-    };
-
-    println!("event_loop.run called");
-    event_loop.run(event_handler).map_err(|err| anyhow!(err))
-}
-
-fn main() -> Result<()> {
-    run()
-}
-*/
 
 fn main() -> Result<()> {
     let event_loop = EventLoop::new()?;

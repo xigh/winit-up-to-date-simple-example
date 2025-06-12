@@ -1,5 +1,5 @@
 [package]
-name = "wgpu0001"
+name = "rv-emu-ui"
 version = "0.1.0"
 edition = "2021"
 license = "mit"
@@ -7,5 +7,6 @@ authors = ["Philippe Anel"]
 repository = "https://github.com/xigh/winit-up-to-date-simple-example"
 
 [dependencies]
-winit = "0.29.15"
+winit = "0.30.11"
 anyhow = "1.0.81"
+softbuffer = "0.4.6"

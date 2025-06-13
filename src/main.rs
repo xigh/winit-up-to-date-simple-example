@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::num::NonZeroU32;
+use std::{num::NonZeroU32, time::Instant};
 use std::rc::Rc;
 use winit::{
     application::ApplicationHandler,
@@ -22,6 +22,7 @@ struct App {
     )>,
     x: i32,
     inc_x: i32,
+    prev: Option<Instant>,
 }
 
 impl App {
@@ -29,6 +30,12 @@ impl App {
         if self.inc_x == 0 {
             self.inc_x = 1;
         }
+
+        if let Some(prev) = self.prev {
+            let dt = prev.elapsed();
+            println!("dt: {:?} fps: {}", dt, 1.0 / dt.as_secs_f64());
+        }
+        self.prev = Some(Instant::now());
 
         self.x += self.inc_x;
         println!("x: {}, inc_x: {}", self.x, self.inc_x);

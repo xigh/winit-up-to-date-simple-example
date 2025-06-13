@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
+use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -8,10 +9,9 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Fullscreen, Window, WindowId},
 };
-use wgpu::util::DeviceExt;
 
-const WINDOW_W: u32 = 320; // 640;
-const WINDOW_H: u32 = 240; // 480; // 360;
+// const WINDOW_H: u32 = 240; // 480; // 360;
+// const WINDOW_W: u32 = 320; // 640;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -60,10 +60,7 @@ const VERTICES: &[Vertex] = &[
     },
 ];
 
-const INDICES: &[u16] = &[
-    0, 1, 2,
-    2, 3, 0,
-];
+const INDICES: &[u16] = &[0, 1, 2, 2, 3, 0];
 
 struct State {
     window: Arc<Window>,
@@ -79,13 +76,15 @@ struct State {
     index_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
     palette_texture: wgpu::Texture,
-    palette_view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
+    frame: u32,
+    width: u32,
+    height: u32,
 }
 
 impl State {
-    async fn new(window: Arc<Window>) -> State {
+    async fn new(window: Arc<Window>, width: u32, height: u32) -> State {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -120,8 +119,8 @@ impl State {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Texture"),
             size: wgpu::Extent3d {
-                width: WINDOW_W,
-                height: WINDOW_H,
+                width: width,
+                height: height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -208,26 +207,14 @@ impl State {
             view_formats: &[],
         });
 
-        let palette_view = palette_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("Palette View"),
-            format: Some(wgpu::TextureFormat::Rgba8Unorm),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            mip_level_count: Some(1),
-            base_array_layer: 0,
-            array_layer_count: Some(1),
-            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-        });
-
         // Initialize default palette
         let mut default_palette = [[0u8; 4]; 256];
         for i in 0..256 {
             default_palette[i] = [
-                (i * 2) as u8,  // R
-                (i * 3) as u8,  // G
-                (i * 4) as u8,  // B
-                255,            // A
+                (i * 2) as u8, // R
+                (i * 3) as u8, // G
+                (i * 4) as u8, // B
+                255,           // A
             ];
         }
 
@@ -295,7 +282,17 @@ impl State {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&palette_view),
+                    resource: wgpu::BindingResource::TextureView(&palette_texture.create_view(&wgpu::TextureViewDescriptor {
+                        label: Some("Palette View"),
+                        format: Some(wgpu::TextureFormat::Rgba8Unorm),
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        aspect: wgpu::TextureAspect::All,
+                        base_mip_level: 0,
+                        mip_level_count: Some(1),
+                        base_array_layer: 0,
+                        array_layer_count: Some(1),
+                        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+                    })),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -310,11 +307,12 @@ impl State {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
@@ -368,9 +366,11 @@ impl State {
             index_buffer,
             texture,
             palette_texture,
-            palette_view,
             bind_group,
             render_pipeline,
+            frame: 0,
+            width,
+            height,
         };
 
         // Configure surface for the first time
@@ -401,49 +401,68 @@ impl State {
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
-            self.surface.configure(&self.device, &wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: self.surface_format,
-                width: new_size.width,
-                height: new_size.height,
-                present_mode: wgpu::PresentMode::Fifo,
-                alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats: vec![],
-                desired_maximum_frame_latency: 2,
-            });
+            self.surface.configure(
+                &self.device,
+                &wgpu::SurfaceConfiguration {
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    format: self.surface_format,
+                    width: new_size.width,
+                    height: new_size.height,
+                    present_mode: wgpu::PresentMode::Fifo,
+                    alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                    view_formats: vec![],
+                    desired_maximum_frame_latency: 2,
+                },
+            );
 
             // Update vertex buffer with new size
-            let (new_vertex_buffer, _) = Self::create_vertex_buffer(&self.device, new_size);
+            let (new_vertex_buffer, _) = Self::create_vertex_buffer(&self, &self.device, new_size);
             self.vertex_buffer = new_vertex_buffer;
         }
     }
 
-    fn create_vertex_buffer(device: &wgpu::Device, size: winit::dpi::PhysicalSize<u32>) -> (wgpu::Buffer, [Vertex; 4]) {
+    fn create_vertex_buffer(
+        &self,
+        device: &wgpu::Device,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) -> (wgpu::Buffer, [Vertex; 4]) {
         // Calculate aspect ratio and zoom factor
-        let width_ratio = size.width as f32 / WINDOW_W as f32;
-        let height_ratio = size.height as f32 / WINDOW_H as f32;
+        let width_ratio = size.width as f32 / self.width as f32;
+        let height_ratio = size.height as f32 / self.height as f32;
         let zoom_factor = width_ratio.min(height_ratio).floor();
 
         // Calculate scaled dimensions
-        let scaled_width = WINDOW_W as f32 * zoom_factor;
-        let scaled_height = WINDOW_H as f32 * zoom_factor;
+        let scaled_width = self.width as f32 * zoom_factor;
+        let scaled_height = self.height as f32 * zoom_factor;
 
         // Create vertices with scaled dimensions
         let vertices = [
             Vertex {
-                position: [-scaled_width / size.width as f32, -scaled_height / size.height as f32],
+                position: [
+                    -scaled_width / size.width as f32,
+                    -scaled_height / size.height as f32,
+                ],
                 tex_coords: [0.0, 1.0],
             },
             Vertex {
-                position: [scaled_width / size.width as f32, -scaled_height / size.height as f32],
+                position: [
+                    scaled_width / size.width as f32,
+                    -scaled_height / size.height as f32,
+                ],
                 tex_coords: [1.0, 1.0],
             },
             Vertex {
-                position: [scaled_width / size.width as f32, scaled_height / size.height as f32],
+                position: [
+                    scaled_width / size.width as f32,
+                    scaled_height / size.height as f32,
+                ],
                 tex_coords: [1.0, 0.0],
             },
             Vertex {
-                position: [-scaled_width / size.width as f32, scaled_height / size.height as f32],
+                position: [
+                    -scaled_width / size.width as f32,
+                    scaled_height / size.height as f32,
+                ],
                 tex_coords: [0.0, 0.0],
             },
         ];
@@ -457,7 +476,26 @@ impl State {
         (vertex_buffer, vertices)
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    #[allow(dead_code)]
+    fn create_cycling_palette(&self, time: f32) -> [[u8; 4]; 256] {
+        let mut palette = [[0u8; 4]; 256];
+        let x = (256 as f32 * time) as u8;
+        // println!("x: {} time: {}", x, time);
+        for i in 0..256 {
+            let r = x.wrapping_add((i * 2) as u8);
+            let g = x.wrapping_add((i * 4) as u8);
+            let b = x.wrapping_add(i as u8);
+            // let hue = (i as f32 / 256.0 + time * 0.1) % 1.0;
+            // Convertir HSV en RGB (simplifié)
+            // let r = ((hue * 6.0).sin().abs() * 255.0) as u8;
+            // let g = (((hue * 6.0 + 2.0) * std::f32::consts::PI / 3.0).sin().abs() * 255.0) as u8;
+            // let b = (((hue * 6.0 + 4.0) * std::f32::consts::PI / 3.0).sin().abs() * 255.0) as u8;
+            palette[i as usize] = [r, g, b, 255];
+        }
+        palette
+    }
+
+    pub fn render(&mut self, data: &[u8], palette: &[[u8; 4]; 256]) -> Result<(), wgpu::SurfaceError> {
         let now = std::time::Instant::now();
         let dur = now - self.last_render_time;
         self.sum_render_time += dur;
@@ -476,30 +514,38 @@ impl State {
             self.sum_render_count = 0;
         }
 
+        // Update palette with cycling colors
+        self.frame += 1;
+        // let palette = self.create_cycling_palette((self.frame % 60) as f32 / 60.0);
+        self.update_palette(palette);
+
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
 
         // Update texture with emulator data
-        let bytes_per_row = ((WINDOW_W + 255) & !255) as u32;  // Align to 256 bytes (wgpu's texture alignment)
-        let bufsize = (bytes_per_row * WINDOW_H) as usize;
-        let mut buffer = vec![0; bufsize];
-        for y in 0..WINDOW_H {
-            for x in 0..WINDOW_W {
-                let i = (y * bytes_per_row + x) as usize;
-                // Simuler un index de couleur (0-255)
-                buffer[i] = ((x + y) % 256) as u8;
-            }
-        }
-
+        let bytes_per_row = ((self.width + 255) & !255) as u32;  // Align to 256 bytes (wgpu's texture alignment)
         let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: bufsize as u64,
+            size: (bytes_per_row * self.height) as u64,
             usage: wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: true,
         });
+
+        // Copy data with padding
+        let mut buffer = vec![0u8; (bytes_per_row * self.height) as usize];
+        for y in 0..self.height {
+            let src_start = (y * self.width) as usize;
+            let dst_start = (y * bytes_per_row) as usize;
+            buffer[dst_start..dst_start + self.width as usize].copy_from_slice(&data[src_start..src_start + self.width as usize]);
+        }
+
         staging_buffer
             .slice(..)
             .get_mapped_range_mut()
@@ -512,7 +558,7 @@ impl State {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(WINDOW_H),
+                    rows_per_image: Some(self.height),
                 },
             },
             wgpu::TexelCopyTextureInfo {
@@ -522,8 +568,8 @@ impl State {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::Extent3d {
-                width: WINDOW_W,
-                height: WINDOW_H,
+                width: self.width,
+                height: self.height,
                 depth_or_array_layers: 1,
             },
         );
@@ -576,9 +622,11 @@ impl State {
             .copy_from_slice(bytemuck::cast_slice(palette));
         staging_buffer.unmap();
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Palette Update Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Palette Update Encoder"),
+            });
 
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
@@ -606,9 +654,46 @@ impl State {
     }
 }
 
+#[derive(Clone)]
+struct Rgba (u8, u8, u8, u8);
+
+impl Rgba {
+    fn to_array(&self) -> [u8; 4] {
+        [self.0, self.1, self.2, self.3]
+    }
+}
+
+impl PartialEq for Rgba {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && self.1 == other.1 && self.2 == other.2 && self.3 == other.3
+    }
+}
+
+impl Default for Rgba {
+    fn default() -> Self {
+        Self(0, 0, 0, 0)
+    }
+}
+
 #[derive(Default)]
 struct App {
     windows: Vec<State>, // space for future use, by example surface texture
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+    palette: Vec<Rgba>,
+}
+
+impl App {
+    pub fn new(width: u32, height: u32, data: Vec<u8>, palette: Vec<Rgba>) -> Self {
+        Self {
+            windows: Vec::new(),
+            width,
+            height,
+            data,
+            palette,
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -617,9 +702,9 @@ impl ApplicationHandler for App {
         let window_attr = Window::default_attributes()
             .with_title("Window")
             .with_resizable(false)
-            .with_inner_size(PhysicalSize::new(WINDOW_W, WINDOW_H));
+            .with_inner_size(PhysicalSize::new(self.width, self.height));
         let window = Arc::new(event_loop.create_window(window_attr).unwrap());
-        let state = pollster::block_on(State::new(window));
+        let state = pollster::block_on(State::new(window, self.width, self.height));
         self.windows.push(state);
     }
 
@@ -741,8 +826,17 @@ impl ApplicationHandler for App {
                     .iter_mut()
                     .find(|state| state.get_window().id() == id)
                 {
-                    state.render().unwrap();
-                    state.get_window().request_redraw();
+                    // source palette might contains fewer than 256 colors, so we need to pad it
+                    let mut full_palette = [[0u8; 4]; 256];
+                    // println!("Palette length: {}", self.palette.len());
+                    for (i, color) in self.palette.iter().enumerate() {
+                        full_palette[i] = color.to_array();
+                        // println!("Palette[{}]: {:?}", i, color.to_array());
+                    }
+                    // println!("Data length: {}", self.data.len());
+                    // println!("First 10 data values: {:?}", &self.data[..10.min(self.data.len())]);
+                    state.render(&self.data, &full_palette).unwrap();
+                    state.get_window().request_redraw(); // Request next frame
                 }
             }
             _ => {}
@@ -751,17 +845,47 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<()> {
+    let tracker_png = include_bytes!("../tracker.png");
+    let tracker_image = image::load_from_memory(tracker_png).unwrap();
+    let tracker_rgba = tracker_image.to_rgba8();
+    let tracker_width = tracker_rgba.width();
+    let tracker_height = tracker_rgba.height();
+    let mut palette = Vec::new();
+    let mut tracker_data = Vec::new();
+    for y in 0..tracker_height {
+        for x in 0..tracker_width {
+            let pixel = tracker_rgba.get_pixel(x, y);
+            let pixel = Rgba(pixel.0[0], pixel.0[1], pixel.0[2], pixel.0[3]);
+            let idx = {
+                let mut found_idx = None;
+                for i in 0..palette.len() {
+                    if pixel == palette[i] {
+                        found_idx = Some(i);
+                        break;
+                    }
+                }
+                if let Some(i) = found_idx {
+                    i as u8
+                } else {
+                    palette.push(pixel);
+                    (palette.len() - 1) as u8
+                }
+            };
+            tracker_data.push(idx);
+        }
+    }
+    // let tracker_rgba_data = tracker_rgba.into_raw();
+    println!("tracker_width: {}", tracker_width);
+    println!("tracker_height: {}", tracker_height);
+    println!("tracker_data: {:?}", tracker_data.len());
+    println!("palette: {:?}", palette.len());
+
     let event_loop = EventLoop::new()?;
 
     // ControlFlow::Poll continuously runs the event loop, even if the OS hasn't
     // dispatched any events. This is ideal for games and similar applications.
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    // ControlFlow::Wait pauses the event loop if no events are available to process.
-    // This is ideal for non-game applications that only update in response to user
-    // input, and uses significantly less power/CPU time than ControlFlow::Poll.
-    // event_loop.set_control_flow(ControlFlow::Wait);
-
-    let mut app = App::default();
+    let mut app = App::new(tracker_width, tracker_height, tracker_data, palette);
     event_loop.run_app(&mut app).map_err(|err| anyhow!(err))
 }

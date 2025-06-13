@@ -78,6 +78,8 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
+    palette_texture: wgpu::Texture,
+    palette_view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
 }
@@ -125,13 +127,25 @@ impl State {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: wgpu::TextureFormat::R8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Texture View"),
+            format: Some(wgpu::TextureFormat::R8Unorm),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            base_array_layer: 0,
+            array_layer_count: Some(1),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        });
+
         let texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Texture Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -147,7 +161,7 @@ impl State {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -156,11 +170,116 @@ impl State {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
             label: Some("texture_bind_group_layout"),
+        });
+
+        let palette_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Palette Texture"),
+            size: wgpu::Extent3d {
+                width: 256,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let palette_view = palette_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Palette View"),
+            format: Some(wgpu::TextureFormat::Rgba8Unorm),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            base_array_layer: 0,
+            array_layer_count: Some(1),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        });
+
+        // Initialize default palette
+        let mut default_palette = [[0u8; 4]; 256];
+        for i in 0..256 {
+            default_palette[i] = [
+                (i * 2) as u8,  // R
+                (i * 3) as u8,  // G
+                (i * 4) as u8,  // B
+                255,            // A
+            ];
+        }
+
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Palette Staging Buffer"),
+            size: 256 * 4,
+            usage: wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+
+        staging_buffer
+            .slice(..)
+            .get_mapped_range_mut()
+            .copy_from_slice(bytemuck::cast_slice(&default_palette));
+        staging_buffer.unmap();
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Palette Update Encoder"),
+        });
+
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256 * 4),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &palette_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: 256,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let palette_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -173,6 +292,14 @@ impl State {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&texture_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&palette_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&palette_sampler),
                 },
             ],
             label: Some("texture_bind_group"),
@@ -240,6 +367,8 @@ impl State {
             vertex_buffer,
             index_buffer,
             texture,
+            palette_texture,
+            palette_view,
             bind_group,
             render_pipeline,
         };
@@ -354,19 +483,14 @@ impl State {
         });
 
         // Update texture with emulator data
-        let bytes_per_row = (WINDOW_W * 4 + 63) & !63;  // Align to 64 bytes (wgpu's texture alignment)
+        let bytes_per_row = ((WINDOW_W + 255) & !255) as u32;  // Align to 256 bytes (wgpu's texture alignment)
         let bufsize = (bytes_per_row * WINDOW_H) as usize;
         let mut buffer = vec![0; bufsize];
         for y in 0..WINDOW_H {
             for x in 0..WINDOW_W {
-                let i = (y * bytes_per_row + x * 4) as usize;
-                let r = x as u8;
-                let g = y as u8;
-                let b = (x + y) as u8;
-                buffer[i] = r; // R
-                buffer[i + 1] = g; // G
-                buffer[i + 2] = b; // B
-                buffer[i + 3] = 255;
+                let i = (y * bytes_per_row + x) as usize;
+                // Simuler un index de couleur (0-255)
+                buffer[i] = ((x + y) % 256) as u8;
             }
         }
 
@@ -436,6 +560,49 @@ impl State {
         output.present();
 
         Ok(())
+    }
+
+    pub fn update_palette(&mut self, palette: &[[u8; 4]; 256]) {
+        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Palette Staging Buffer"),
+            size: 256 * 4,
+            usage: wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+
+        staging_buffer
+            .slice(..)
+            .get_mapped_range_mut()
+            .copy_from_slice(bytemuck::cast_slice(palette));
+        staging_buffer.unmap();
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Palette Update Encoder"),
+        });
+
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256 * 4),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.palette_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: 256,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.queue.submit(std::iter::once(encoder.finish()));
     }
 }
 

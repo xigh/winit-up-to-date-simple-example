@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::{num::NonZeroU32, time::Instant};
-use std::rc::Rc;
+use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -13,86 +12,123 @@ use winit::{
 const WINDOW_W: u32 = 640;
 const WINDOW_H: u32 = 480; // 360;
 
-#[derive(Default)]
-struct App {
-    windows: Vec<(
-        Rc<Window>,
-        softbuffer::Context<Rc<Window>>,
-        softbuffer::Surface<Rc<Window>, Rc<Window>>,
-    )>,
-    x: i32,
-    inc_x: i32,
-    prev: Option<Instant>,
+struct State {
+    window: Arc<Window>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    size: winit::dpi::PhysicalSize<u32>,
+    surface: wgpu::Surface<'static>,
+    surface_format: wgpu::TextureFormat,
 }
 
-impl App {
-    fn redraw(&mut self, id: WindowId) {
-        if self.inc_x == 0 {
-            self.inc_x = 1;
-        }
-
-        if let Some(prev) = self.prev {
-            let dt = prev.elapsed();
-            println!("dt: {:?} fps: {}", dt, 1.0 / dt.as_secs_f64());
-        }
-        self.prev = Some(Instant::now());
-
-        self.x += self.inc_x;
-        println!("x: {}, inc_x: {}", self.x, self.inc_x);
-
-        if self.x > 400 {
-            self.inc_x = -1;
-        } else if self.x < 100 {
-            self.inc_x = 1;
-        }
-
-        let (window, _context, surface) = self
-            .windows
-            .iter_mut()
-            .find(|(window, _, _)| window.id() == id)
+impl State {
+    async fn new(window: Arc<Window>) -> State {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
             .unwrap();
-        let (width, height) = {
-            let size = window.inner_size();
-            (size.width, size.height)
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await
+            .unwrap();
+
+        let size = window.inner_size();
+
+        let surface = instance.create_surface(window.clone()).unwrap();
+        let cap = surface.get_capabilities(&adapter);
+        let surface_format = cap.formats[0];
+
+        let state = State {
+            window,
+            device,
+            queue,
+            size,
+            surface,
+            surface_format,
         };
-        surface
-            .resize(
-                NonZeroU32::new(width).unwrap(),
-                NonZeroU32::new(height).unwrap(),
-            )
-            .unwrap();
 
-        let scale_x = (width as f32 / WINDOW_W as f32).floor() as u32;
-        let scale_y = (height as f32 / WINDOW_H as f32).floor() as u32;
-        let scale = std::cmp::min(scale_x, scale_y);
+        // Configure surface for the first time
+        state.configure_surface();
 
-        let ww = WINDOW_W * scale;
-        let wh = WINDOW_H * scale;
-        let scale = scale as i32;
-
-        let mut buffer = surface.buffer_mut().unwrap();
-        for index in 0..(width * height) {
-            let p_y = (index / width) as i32;
-            let p_x = (index % width) as i32;
-
-            let x = (p_x - ((width - ww) as i32 / 2)) / scale;
-            let y = (p_y - ((height - wh) as i32 / 2)) / scale;
-
-            let (red, green, blue) =
-                if x < 0 || x >= WINDOW_W as i32 || y < 0 || y >= WINDOW_H as i32 {
-                    (0, 0, 0)
-                // } else if (x >= 100 && x <= 104) || (y >= 100 && y <= 104) {
-                } else if (x == self.x) || (y == self.x) {
-                    (255, 255, 255)
-                } else {
-                    (0, 80, 130)
-                };
-
-            buffer[index as usize] = blue | (green << 8) | (red << 16);
-        }
-
-        buffer.present().unwrap();
+        state
     }
+
+    fn get_window(&self) -> &Window {
+        &self.window
+    }
+
+    fn configure_surface(&self) {
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: self.surface_format,
+            // Request compatibility with the sRGB-format texture view we‘re going to create later.
+            view_formats: vec![self.surface_format.add_srgb_suffix()],
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            width: self.size.width,
+            height: self.size.height,
+            desired_maximum_frame_latency: 2,
+            present_mode: wgpu::PresentMode::AutoVsync,
+        };
+        self.surface.configure(&self.device, &surface_config);
+    }
+
+    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        self.size = new_size;
+
+        // reconfigure the surface
+        self.configure_surface();
+    }
+
+    fn render(&mut self) {
+        // Create texture view
+        let surface_texture = self
+            .surface
+            .get_current_texture()
+            .expect("failed to acquire next swapchain texture");
+        let texture_view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                // Without add_srgb_suffix() the image we will be working with
+                // might not be "gamma correct".
+                format: Some(self.surface_format.add_srgb_suffix()),
+                ..Default::default()
+            });
+
+        
+        // Renders a GREEN screen
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        // Create the renderpass which will clear the screen.
+        let renderpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &texture_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        // If you wanted to call any drawing commands, they would go here.
+
+        // End the renderpass.
+        drop(renderpass);
+
+        // Submit the command in the queue to execute
+        self.queue.submit([encoder.finish()]);
+        self.window.pre_present_notify();
+        surface_texture.present();
+    }
+}
+
+#[derive(Default)]
+struct App {
+    windows: Vec<State>, // space for future use, by example surface texture
 }
 
 impl ApplicationHandler for App {
@@ -102,10 +138,9 @@ impl ApplicationHandler for App {
             .with_title("Window")
             .with_resizable(false)
             .with_inner_size(PhysicalSize::new(WINDOW_W, WINDOW_H));
-        let window = Rc::new(event_loop.create_window(window_attr).unwrap());
-        let context = softbuffer::Context::new(Rc::clone(&window)).unwrap();
-        let surface = softbuffer::Surface::new(&context, Rc::clone(&window)).unwrap();
-        self.windows.push((window, context, surface));
+        let window = Arc::new(event_loop.create_window(window_attr).unwrap());
+        let state = pollster::block_on(State::new(window));
+        self.windows.push(state);
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
@@ -117,17 +152,14 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        let window_ids: Vec<_> = self.windows.iter().map(|(window, _, _)| window.id()).collect();
-        for id in window_ids {
-            self.redraw(id);
-        }
+        // todo ???
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
                 println!("\tCloseRequested");
-                self.windows.retain(|(window, _, _)| window.id() != id);
+                self.windows.retain(|state| state.get_window().id() != id);
                 if self.windows.is_empty() {
                     event_loop.exit();
                 }
@@ -147,7 +179,7 @@ impl ApplicationHandler for App {
                     }
                     match code {
                         KeyCode::Escape => {
-                            self.windows.retain(|(window, _, _)| window.id() != id);
+                            self.windows.retain(|state| state.get_window().id() != id);
                             if self.windows.is_empty() {
                                 event_loop.exit();
                             }
@@ -155,12 +187,12 @@ impl ApplicationHandler for App {
                         KeyCode::KeyF => {
                             println!("KeyF");
                             // toggle fullscreen
-                            if let Some((window, _, _)) = self
+                            if let Some(state) = self
                                 .windows
                                 .iter_mut()
-                                .find(|(window, _, _)| window.id() == id)
+                                .find(|state| state.get_window().id() == id)
                             {
-                                window.set_fullscreen(if window.fullscreen().is_some() {
+                                state.get_window().set_fullscreen(if state.get_window().fullscreen().is_some() {
                                     None
                                 } else {
                                     Some(Fullscreen::Borderless(None))
@@ -177,6 +209,9 @@ impl ApplicationHandler for App {
             // WindowEvent::ActivationTokenDone { serial, token } => todo!(),
             WindowEvent::Resized(new_size) => {
                 println!("\tResized {:?}", new_size);
+                if let Some(state) = self.windows.iter_mut().find(|state| state.get_window().id() == id) {
+                    state.resize(new_size);
+                }
             }
             // WindowEvent::Moved(_) => todo!(),
             WindowEvent::Destroyed => {
@@ -215,7 +250,10 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 println!("\tRedrawRequested");
-                self.redraw(id);
+                if let Some(state) = self.windows.iter_mut().find(|state| state.get_window().id() == id) {
+                    state.render();
+                    state.get_window().request_redraw();
+                }
             }
             _ => {}
         }

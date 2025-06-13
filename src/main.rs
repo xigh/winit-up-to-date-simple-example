@@ -682,6 +682,7 @@ struct App {
     height: u32,
     data: Vec<u8>,
     palette: Vec<Rgba>,
+    zoom_factor: u32,
 }
 
 impl App {
@@ -692,6 +693,26 @@ impl App {
             height,
             data,
             palette,
+            zoom_factor: 2, // Default zoom factor of 2
+        }
+    }
+
+    fn update_zoom(&mut self, delta: i32) {
+        let new_zoom = (self.zoom_factor as i32 + delta).clamp(1, 8) as u32;
+        println!("update_zoom: {} -> {}", self.zoom_factor, new_zoom);
+        if new_zoom != self.zoom_factor {
+            self.zoom_factor = new_zoom;
+            // Update window size for all windows
+            for state in &mut self.windows {
+                if state.get_window().fullscreen().is_none() {
+                    let new_size = PhysicalSize::new(
+                        self.width * self.zoom_factor,
+                        self.height * self.zoom_factor,
+                    );
+                    let _ = state.get_window().request_inner_size(new_size);
+                    state.resize(new_size);
+                }
+            }
         }
     }
 }
@@ -702,7 +723,10 @@ impl ApplicationHandler for App {
         let window_attr = Window::default_attributes()
             .with_title("Window")
             .with_resizable(false)
-            .with_inner_size(PhysicalSize::new(self.width, self.height));
+            .with_inner_size(PhysicalSize::new(
+                self.width * self.zoom_factor,
+                self.height * self.zoom_factor,
+            ));
         let window = Arc::new(event_loop.create_window(window_attr).unwrap());
         let state = pollster::block_on(State::new(window, self.width, self.height));
         self.windows.push(state);
@@ -740,34 +764,41 @@ impl ApplicationHandler for App {
                         code, event.state, is_synthetic
                     );
                     if !is_synthetic {
-                        // windows[idx].on_key_input(code, event.state == ElementState::Pressed, &q);
-                    }
-                    match code {
-                        KeyCode::Escape => {
-                            self.windows.retain(|state| state.get_window().id() != id);
-                            if self.windows.is_empty() {
-                                event_loop.exit();
+                        match code {
+                            KeyCode::Escape => {
+                                self.windows.retain(|state| state.get_window().id() != id);
+                                if self.windows.is_empty() {
+                                    event_loop.exit();
+                                }
                             }
-                        }
-                        KeyCode::KeyF => {
-                            println!("KeyF");
-                            // toggle fullscreen
-                            if let Some(state) = self
-                                .windows
-                                .iter_mut()
-                                .find(|state| state.get_window().id() == id)
-                            {
-                                state.get_window().set_fullscreen(
-                                    if state.get_window().fullscreen().is_some() {
-                                        None
-                                    } else {
-                                        Some(Fullscreen::Borderless(None))
-                                    },
-                                );
+                            KeyCode::KeyF => {
+                                println!("KeyF");
+                                // toggle fullscreen
+                                if let Some(state) = self
+                                    .windows
+                                    .iter_mut()
+                                    .find(|state| state.get_window().id() == id)
+                                {
+                                    state.get_window().set_fullscreen(
+                                        if state.get_window().fullscreen().is_some() {
+                                            None
+                                        } else {
+                                            Some(Fullscreen::Borderless(None))
+                                        },
+                                    );
+                                }
                             }
-                        }
-                        _ => {
-                            // println!("Other");
+                            KeyCode::Equal | KeyCode::NumpadAdd => {
+                                if event.state == ElementState::Pressed {
+                                    self.update_zoom(1);
+                                }
+                            }
+                            KeyCode::Minus | KeyCode::NumpadSubtract => {
+                                if event.state == ElementState::Pressed {
+                                    self.update_zoom(-1);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }

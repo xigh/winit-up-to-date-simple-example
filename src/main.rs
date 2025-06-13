@@ -78,8 +78,6 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
-    texture_view: wgpu::TextureView,
-    texture_sampler: wgpu::Sampler,
     bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
 }
@@ -242,8 +240,6 @@ impl State {
             vertex_buffer,
             index_buffer,
             texture,
-            texture_view,
-            texture_sampler,
             bind_group,
             render_pipeline,
         };
@@ -274,53 +270,87 @@ impl State {
     }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        self.size = new_size;
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            self.surface.configure(&self.device, &wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: self.surface_format,
+                width: new_size.width,
+                height: new_size.height,
+                present_mode: wgpu::PresentMode::Fifo,
+                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            });
 
-        // reconfigure the surface
-        self.configure_surface();
+            // Update vertex buffer with new size
+            let (new_vertex_buffer, _) = Self::create_vertex_buffer(&self.device, new_size);
+            self.vertex_buffer = new_vertex_buffer;
+        }
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
-
+    fn create_vertex_buffer(device: &wgpu::Device, size: winit::dpi::PhysicalSize<u32>) -> (wgpu::Buffer, [Vertex; 4]) {
         // Calculate aspect ratio and zoom factor
-        let width_ratio = self.size.width as f32 / WINDOW_W as f32;
-        let height_ratio = self.size.height as f32 / WINDOW_H as f32;
+        let width_ratio = size.width as f32 / WINDOW_W as f32;
+        let height_ratio = size.height as f32 / WINDOW_H as f32;
         let zoom_factor = width_ratio.min(height_ratio).floor();
 
         // Calculate scaled dimensions
         let scaled_width = WINDOW_W as f32 * zoom_factor;
         let scaled_height = WINDOW_H as f32 * zoom_factor;
 
-        // Update vertices with scaled dimensions
+        // Create vertices with scaled dimensions
         let vertices = [
             Vertex {
-                position: [-scaled_width / self.size.width as f32, -scaled_height / self.size.height as f32],
+                position: [-scaled_width / size.width as f32, -scaled_height / size.height as f32],
                 tex_coords: [0.0, 1.0],
             },
             Vertex {
-                position: [scaled_width / self.size.width as f32, -scaled_height / self.size.height as f32],
+                position: [scaled_width / size.width as f32, -scaled_height / size.height as f32],
                 tex_coords: [1.0, 1.0],
             },
             Vertex {
-                position: [scaled_width / self.size.width as f32, scaled_height / self.size.height as f32],
+                position: [scaled_width / size.width as f32, scaled_height / size.height as f32],
                 tex_coords: [1.0, 0.0],
             },
             Vertex {
-                position: [-scaled_width / self.size.width as f32, scaled_height / self.size.height as f32],
+                position: [-scaled_width / size.width as f32, scaled_height / size.height as f32],
                 tex_coords: [0.0, 0.0],
             },
         ];
 
-        // Update vertex buffer
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        (vertex_buffer, vertices)
+    }
+
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let now = std::time::Instant::now();
+        let dur = now - self.last_render_time;
+        self.sum_render_time += dur;
+        self.sum_render_count += 1;
+        self.last_render_time = now;
+
+        if self.sum_render_count > 100 {
+            println!(
+                "render time: {:?} fps: {} [{}x{}]",
+                self.sum_render_time / self.sum_render_count,
+                self.sum_render_count as f64 / self.sum_render_time.as_secs_f64(),
+                self.size.width,
+                self.size.height,
+            );
+            self.sum_render_time = std::time::Duration::from_secs(0);
+            self.sum_render_count = 0;
+        }
+
+        let output = self.surface.get_current_texture()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render Encoder"),
         });
 
         // Update texture with emulator data
@@ -397,7 +427,7 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..6, 0, 0..1);
         }

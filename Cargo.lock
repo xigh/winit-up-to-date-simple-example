@@ -1359,6 +1359,7 @@ name = "rv-emu-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "pollster",
  "softbuffer",
  "wgpu",
@@ -1703,9 +1704,9 @@ checksum = "d4c87d22b6e3f4a18d4d40ef354e97c90fcb14dd91d7dc0aa9d8a1172ebf7202"
 
 [[package]]
 name = "unicode-width"
-version = "0.2.1"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a1a07cc7db3810833284e8d372ccdc6da29741639ecc70c9ec107df0fa6154c"
+checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
 
 [[package]]
 name = "version_check"
